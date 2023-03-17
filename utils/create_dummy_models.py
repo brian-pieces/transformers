@@ -179,7 +179,7 @@ def get_processor_types_from_config_class(config_class, allowed_mappings=None):
     return processor_types
 
 
-def get_architectures_from_config_class(config_class, arch_mappings):
+def get_architectures_from_config_class(config_class, arch_mappings, models_to_skip=None):
     """Return a tuple of all possible architectures attributed to a configuration class `config_class`.
 
     For example, BertConfig -> [BertModel, BertForMaskedLM, ..., BertForQuestionAnswering].
@@ -192,12 +192,16 @@ def get_architectures_from_config_class(config_class, arch_mappings):
     # We avoid the duplication.
     architectures = set()
 
+    if models_to_skip is None:
+        models_to_skip = []
+    models_to_skip = UNCONVERTIBLE_MODEL_ARCHITECTURES.union(models_to_skip)
+
     for mapping in arch_mappings:
         if config_class in mapping:
             models = mapping[config_class]
             models = tuple(models) if isinstance(models, collections.abc.Sequence) else (models,)
             for model in models:
-                if model.__name__ not in UNCONVERTIBLE_MODEL_ARCHITECTURES:
+                if model.__name__ not in models_to_skip:
                     architectures.add(model)
 
     architectures = tuple(architectures)
@@ -1215,6 +1219,14 @@ if __name__ == "__main__":
         type=list_str,
         help="Comma-separated list of model type(s) from which the tiny models will be created.",
     )
+    parser.add_argument(
+        "--models_to_skip",
+        type=list_str,
+        help=(
+            "Comma-separated list of model class names(s) from which the tiny models won't be created.\nThis is usually"
+            "the list of model classes that have their tiny versions already uploaded to the Hub."
+        ),
+    )
     parser.add_argument("--upload", action="store_true", help="If to upload the created tiny models to the Hub.")
     parser.add_argument(
         "--organization",
@@ -1239,9 +1251,9 @@ if __name__ == "__main__":
     to_create = {
         c: {
             "processor": processor_type_map[c],
-            "pytorch": get_architectures_from_config_class(c, pytorch_arch_mappings),
-            "tensorflow": get_architectures_from_config_class(c, tensorflow_arch_mappings),
-            # "flax": get_architectures_from_config_class(c, flax_arch_mappings),
+            "pytorch": get_architectures_from_config_class(c, pytorch_arch_mappings, args.models_to_skip),
+            "tensorflow": get_architectures_from_config_class(c, tensorflow_arch_mappings, args.models_to_skip),
+            # "flax": get_architectures_from_config_class(c, flax_arch_mappings, args.models_to_skip),
         }
         for c in config_classes
     }
