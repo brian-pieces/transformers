@@ -70,6 +70,7 @@ FRAMEWORKS = ["pytorch", "tensorflow"]
 INVALID_ARCH = []
 TARGET_VOCAB_SIZE = 1024
 
+data = {"training_ds": None, "testing_ds": None}
 
 # This list contains the model architectures for which a tiny version could not be created.
 # Avoid to add new architectures here - unless we have verified carefully that it's (almost) impossible to create them.
@@ -426,11 +427,13 @@ def get_tiny_config(config_class, model_class=None, **model_tester_kwargs):
 
 
 def convert_tokenizer(tokenizer_fast: PreTrainedTokenizerFast):
-    new_tokenizer = tokenizer_fast.train_new_from_iterator(training_ds["text"], TARGET_VOCAB_SIZE, show_progress=False)
+    new_tokenizer = tokenizer_fast.train_new_from_iterator(
+        data["training_ds"]["text"], TARGET_VOCAB_SIZE, show_progress=False
+    )
 
     # Make sure it at least runs
     if not isinstance(new_tokenizer, LayoutLMv3TokenizerFast):
-        new_tokenizer(testing_ds["text"])
+        new_tokenizer(data["testing_ds"]["text"])
 
     return new_tokenizer
 
@@ -1180,7 +1183,15 @@ def build_simple_report(results):
     return text, failed_text
 
 
-if __name__ == "__main__":
+def create_tiny_models(
+    output_path,
+    all,
+    model_types,
+    models_to_skip,
+    no_check,
+    upload,
+    organization,
+):
     clone_path = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
     if os.getcwd() != clone_path:
         raise ValueError(f"This script should be run from the root of the clone of `transformers` {clone_path}")
@@ -1193,12 +1204,96 @@ if __name__ == "__main__":
     _tensorflow_arch_mappings = [
         x for x in dir(transformers_module) if x.startswith("TF_MODEL_") and x.endswith("_MAPPING")
     ]
-    # _flax_arch_mappings = [x for x in dir(transformers_module) if x.startswith("FLAX_MODEL_") and x.endswith("_MAPPING")]
+    # _flax_arch_mappings = [
+    #     x for x in dir(transformers_module) if x.startswith("FLAX_MODEL_") and x.endswith("_MAPPING")
+    # ]
 
     pytorch_arch_mappings = [getattr(transformers_module, x) for x in _pytorch_arch_mappings]
     tensorflow_arch_mappings = [getattr(transformers_module, x) for x in _tensorflow_arch_mappings]
     # flax_arch_mappings = [getattr(transformers_module, x) for x in _flax_arch_mappings]
 
+    ds = load_dataset("wikitext", "wikitext-2-raw-v1")
+    data["training_ds"] = ds["train"]
+    data["testing_ds"] = ds["test"]
+
+    config_classes = CONFIG_MAPPING.values()
+    if not all:
+        config_classes = [CONFIG_MAPPING[model_type] for model_type in model_types]
+
+    # A map from config classes to tuples of processors (tokenizer, feature extractor, processor) classes
+    processor_type_map = {c: get_processor_types_from_config_class(c) for c in config_classes}
+
+    to_create = {
+        c: {
+            "processor": processor_type_map[c],
+            "pytorch": get_architectures_from_config_class(c, pytorch_arch_mappings, models_to_skip),
+            "tensorflow": get_architectures_from_config_class(c, tensorflow_arch_mappings, models_to_skip),
+            # "flax": get_architectures_from_config_class(c, flax_arch_mappings, models_to_skip),
+        }
+        for c in config_classes
+    }
+
+    results = {}
+    for c, models_to_create in list(to_create.items()):
+        print(f"Create models for {c.__name__} ...")
+        result = build(c, models_to_create, output_dir=os.path.join(output_path, c.model_type))
+        results[c.__name__] = result
+        print("=" * 40)
+
+    with open("tiny_model_creation_report.json", "w") as fp:
+        json.dump(results, fp, indent=4)
+
+    # Build the tiny model summary file. The `tokenizer_classes` and `processor_classes` could be both empty lists.
+    # When using the items in this file to update the file `tests/utils/tiny_model_summary.json`, the model
+    # architectures with `tokenizer_classes` and `processor_classes` being both empty should **NOT** be added to
+    # `tests/utils/tiny_model_summary.json`.
+    tiny_model_summary = build_tiny_model_summary(results)
+    with open("tiny_model_summary.json", "w") as fp:
+        json.dump(tiny_model_summary, fp, indent=4)
+
+    # Build the warning/failure report (json format): same format as the complete `results` except this contains only
+    # warnings or errors.
+    failed_results = build_failed_report(results)
+    with open("failed_report.json", "w") as fp:
+        json.dump(failed_results, fp, indent=4)
+
+    simple_report, failed_report = build_simple_report(results)
+    # The simplified report: a .txt file with each line of format:
+    # {model architecture name}: {OK or error message}
+    with open("simple_report.txt", "w") as fp:
+        fp.write(simple_report)
+
+    # The simplified failure report: same above except this only contains line with errors
+    with open("simple_failed_report.txt", "w") as fp:
+        fp.write(failed_report)
+
+    if upload:
+        if organization is None:
+            raise ValueError("The argument `organization` could not be `None`. No model is uploaded")
+
+        to_upload = []
+        for model_type in os.listdir(output_path):
+            for arch in os.listdir(os.path.join(output_path, model_type)):
+                if arch == "processors":
+                    continue
+                to_upload.append(os.path.join(output_path, model_type, arch))
+        to_upload = sorted(to_upload)
+
+        upload_results = {}
+        if len(to_upload) > 0:
+            for model_dir in to_upload:
+                try:
+                    upload_model(model_dir, organization)
+                except Exception as e:
+                    error = f"Failed to upload {model_dir}. {e.__class__.__name__}: {e}"
+                    logger.error(error)
+                    upload_results[model_dir] = error
+
+        with open("failed_uploads.json", "w") as fp:
+            json.dump(upload_results, fp, indent=4)
+
+
+if __name__ == "__main__":
     ds = load_dataset("wikitext", "wikitext-2-raw-v1")
     training_ds = ds["train"]
     testing_ds = ds["test"]
@@ -1241,78 +1336,12 @@ if __name__ == "__main__":
     if not args.all and not args.model_types:
         raise ValueError("Please provide at least one model type or pass `--all` to export all architectures.")
 
-    config_classes = CONFIG_MAPPING.values()
-    if not args.all:
-        config_classes = [CONFIG_MAPPING[model_type] for model_type in args.model_types]
-
-    # A map from config classes to tuples of processors (tokenizer, feature extractor, processor) classes
-    processor_type_map = {c: get_processor_types_from_config_class(c) for c in config_classes}
-
-    to_create = {
-        c: {
-            "processor": processor_type_map[c],
-            "pytorch": get_architectures_from_config_class(c, pytorch_arch_mappings, args.models_to_skip),
-            "tensorflow": get_architectures_from_config_class(c, tensorflow_arch_mappings, args.models_to_skip),
-            # "flax": get_architectures_from_config_class(c, flax_arch_mappings, args.models_to_skip),
-        }
-        for c in config_classes
-    }
-
-    results = {}
-    for c, models_to_create in list(to_create.items()):
-        print(f"Create models for {c.__name__} ...")
-        result = build(c, models_to_create, output_dir=os.path.join(args.output_path, c.model_type))
-        results[c.__name__] = result
-        print("=" * 40)
-
-    with open("tiny_model_creation_report.json", "w") as fp:
-        json.dump(results, fp, indent=4)
-
-    # Build the tiny model summary file. The `tokenizer_classes` and `processor_classes` could be both empty lists.
-    # When using the items in this file to update the file `tests/utils/tiny_model_summary.json`, the model
-    # architectures with `tokenizer_classes` and `processor_classes` being both empty should **NOT** be added to
-    # `tests/utils/tiny_model_summary.json`.
-    tiny_model_summary = build_tiny_model_summary(results)
-    with open("tiny_model_summary.json", "w") as fp:
-        json.dump(tiny_model_summary, fp, indent=4)
-
-    # Build the warning/failure report (json format): same format as the complete `results` except this contains only
-    # warnings or errors.
-    failed_results = build_failed_report(results)
-    with open("failed_report.json", "w") as fp:
-        json.dump(failed_results, fp, indent=4)
-
-    simple_report, failed_report = build_simple_report(results)
-    # The simplified report: a .txt file with each line of format:
-    # {model architecture name}: {OK or error message}
-    with open("simple_report.txt", "w") as fp:
-        fp.write(simple_report)
-
-    # The simplified failure report: same above except this only contains line with errors
-    with open("simple_failed_report.txt", "w") as fp:
-        fp.write(failed_report)
-
-    if args.upload:
-        if args.organization is None:
-            raise ValueError("The argument `organization` could not be `None`. No model is uploaded")
-
-        to_upload = []
-        for model_type in os.listdir(args.output_path):
-            for arch in os.listdir(os.path.join(args.output_path, model_type)):
-                if arch == "processors":
-                    continue
-                to_upload.append(os.path.join(args.output_path, model_type, arch))
-        to_upload = sorted(to_upload)
-
-        upload_results = {}
-        if len(to_upload) > 0:
-            for model_dir in to_upload:
-                try:
-                    upload_model(model_dir, args.organization)
-                except Exception as e:
-                    error = f"Failed to upload {model_dir}. {e.__class__.__name__}: {e}"
-                    logger.error(error)
-                    upload_results[model_dir] = error
-
-        with open("failed_uploads.json", "w") as fp:
-            json.dump(upload_results, fp, indent=4)
+    create_tiny_models(
+        args.output_path,
+        args.all,
+        args.model_types,
+        args.models_to_skip,
+        args.no_check,
+        args.upload,
+        args.organization,
+    )
