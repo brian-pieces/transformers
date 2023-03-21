@@ -452,7 +452,7 @@ class T5Attention(nn.Module):
 
     def forward(
         self,
-        prompt_one_hot: torch.Tensor,
+        brian_input,
         hidden_states,
         mask=None,
         key_value_states=None,
@@ -463,6 +463,7 @@ class T5Attention(nn.Module):
         use_cache=False,
         output_attentions=False,
     ):
+        print("brian_input", brian_input.shape)
         """
         Self-attention (if key_value_states is None) or attention over source sentence (provided by key_value_states).
         """
@@ -590,7 +591,7 @@ class T5LayerSelfAttention(nn.Module):
 
     def forward(
         self,
-        prompt_one_hot: torch.Tensor,
+        brian_input,
         hidden_states,
         attention_mask=None,
         position_bias=None,
@@ -601,8 +602,8 @@ class T5LayerSelfAttention(nn.Module):
     ):
         normed_hidden_states = self.layer_norm(hidden_states)
         attention_output = self.SelfAttention(
+            brian_input,
             normed_hidden_states,
-            prompt_one_hot=prompt_one_hot,
             mask=attention_mask,
             position_bias=position_bias,
             layer_head_mask=layer_head_mask,
@@ -624,7 +625,7 @@ class T5LayerCrossAttention(nn.Module):
 
     def forward(
         self,
-        prompt_one_hot: torch.Tensor,
+        brian_input,
         hidden_states,
         key_value_states,
         attention_mask=None,
@@ -637,8 +638,8 @@ class T5LayerCrossAttention(nn.Module):
     ):
         normed_hidden_states = self.layer_norm(hidden_states)
         attention_output = self.EncDecAttention(
+            brian_input,
             normed_hidden_states,
-            prompt_one_hot=prompt_one_hot,
             mask=attention_mask,
             key_value_states=key_value_states,
             position_bias=position_bias,
@@ -666,8 +667,8 @@ class T5Block(nn.Module):
 
     def forward(
         self,
+        brian_input,
         hidden_states,
-        prompt_one_hot: torch.Tensor,
         attention_mask=None,
         position_bias=None,
         encoder_hidden_states=None,
@@ -698,8 +699,8 @@ class T5Block(nn.Module):
             self_attn_past_key_value, cross_attn_past_key_value = None, None
 
         self_attention_outputs = self.layer[0](
+            brian_input,
             hidden_states,
-            prompt_one_hot=prompt_one_hot,
             attention_mask=attention_mask,
             position_bias=position_bias,
             layer_head_mask=layer_head_mask,
@@ -729,8 +730,8 @@ class T5Block(nn.Module):
                 query_length = None
 
             cross_attention_outputs = self.layer[1](
+                brian_input,
                 hidden_states,
-                prompt_one_hot=prompt_one_hot,
                 key_value_states=encoder_hidden_states,
                 attention_mask=encoder_attention_mask,
                 position_bias=encoder_decoder_position_bias,
@@ -951,7 +952,7 @@ class T5Stack(T5PreTrainedModel):
 
     def forward(
         self,
-        prompt_one_hot: torch.Tensor,
+        brian_input=None,
         input_ids=None,
         attention_mask=None,
         encoder_hidden_states=None,
@@ -1082,8 +1083,8 @@ class T5Stack(T5PreTrainedModel):
 
                 layer_outputs = checkpoint(
                     create_custom_forward(layer_module),
+                    brian_input,
                     hidden_states,
-                    prompt_one_hot,
                     extended_attention_mask,
                     position_bias,
                     encoder_hidden_states,
@@ -1095,8 +1096,8 @@ class T5Stack(T5PreTrainedModel):
                 )
             else:
                 layer_outputs = layer_module(
+                    brian_input,
                     hidden_states,
-                    prompt_one_hot=prompt_one_hot,
                     attention_mask=extended_attention_mask,
                     position_bias=position_bias,
                     encoder_hidden_states=encoder_hidden_states,
@@ -1628,7 +1629,7 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
     @replace_return_docstrings(output_type=Seq2SeqLMOutput, config_class=_CONFIG_FOR_DOC)
     def forward(
         self,
-        prompt_one_hot: torch.Tensor,
+        brian_input: torch.Tensor,
         input_ids: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.FloatTensor] = None,
         decoder_input_ids: Optional[torch.LongTensor] = None,
@@ -1690,7 +1691,7 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         if encoder_outputs is None:
             # Convert encoder inputs in embeddings if needed
             encoder_outputs = self.encoder(
-                prompt_one_hot=prompt_one_hot,
+                brian_input=brian_input,
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 inputs_embeds=inputs_embeds,
@@ -1728,7 +1729,7 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
 
         # Decode
         decoder_outputs = self.decoder(
-            prompt_one_hot=prompt_one_hot,
+            brian_input=brian_input,
             input_ids=decoder_input_ids,
             attention_mask=decoder_attention_mask,
             inputs_embeds=decoder_inputs_embeds,
