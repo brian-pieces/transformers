@@ -463,7 +463,6 @@ class T5Attention(nn.Module):
         use_cache=False,
         output_attentions=False,
     ):
-        print("brian_input", brian_input.shape)
         """
         Self-attention (if key_value_states is None) or attention over source sentence (provided by key_value_states).
         """
@@ -1421,6 +1420,7 @@ class T5Model(T5PreTrainedModel):
     @replace_return_docstrings(output_type=Seq2SeqModelOutput, config_class=_CONFIG_FOR_DOC)
     def forward(
         self,
+        brian_input: Optional[torch.LongTensor] = None,
         input_ids: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.FloatTensor] = None,
         decoder_input_ids: Optional[torch.LongTensor] = None,
@@ -1473,6 +1473,7 @@ class T5Model(T5PreTrainedModel):
         # Encode if needed (training, first prediction pass)
         if encoder_outputs is None:
             encoder_outputs = self.encoder(
+                brian_input=brian_input,
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 inputs_embeds=inputs_embeds,
@@ -1503,6 +1504,7 @@ class T5Model(T5PreTrainedModel):
 
         # Decode
         decoder_outputs = self.decoder(
+            brian_input=brian_input,
             input_ids=decoder_input_ids,
             attention_mask=decoder_attention_mask,
             inputs_embeds=decoder_inputs_embeds,
@@ -1629,7 +1631,7 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
     @replace_return_docstrings(output_type=Seq2SeqLMOutput, config_class=_CONFIG_FOR_DOC)
     def forward(
         self,
-        brian_input: torch.Tensor,
+        brian_input: Optional[torch.LongTensor] = None,
         input_ids: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.FloatTensor] = None,
         decoder_input_ids: Optional[torch.LongTensor] = None,
